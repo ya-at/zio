@@ -8,6 +8,8 @@ object ZLayerSpec extends ZIOBaseSpec {
 
   import ZIOTag._
 
+  trait MyLabel
+
   def testSize[R](layer: Layer[Nothing, R], n: Int, label: String = ""): UIO[TestResult] =
     ZIO.scoped {
       layer.build.flatMap { env =>
@@ -682,6 +684,110 @@ object ZLayerSpec extends ZIOBaseSpec {
         } yield assertTrue(
           result == Set("Running TodoRepo", "Running TodoConfig", "Running EmailService")
         )
+      },
+      suite("labeled") {
+        type Request  = Int
+        type Response = Request
+
+        trait HttpClient {
+          def doRequest(request: Request): Response
+        }
+
+        class HttpClientWithProxy(val delegate: HttpClient) extends HttpClient {
+          override def doRequest(request: Request): Response = delegate.doRequest(request) + 1
+        }
+
+        object HttpClient {
+          val common: ULayer[HttpClient] = ZLayer.succeed(new HttpClient {
+            override def doRequest(request: Request): Response = request
+          })
+
+          val withProxy: URLayer[HttpClient, HttpClient] = ZLayer.fromFunction(new HttpClientWithProxy(_))
+        }
+
+        trait EmailService {
+          def send(): Unit
+        }
+
+        object EmailService {
+          val live: ULayer[EmailService] = ZLayer.succeed(new EmailService {
+            override def send(): Unit = ()
+          })
+        }
+
+        trait AuthService {
+          def auth(): Unit
+        }
+
+        object AuthService {
+          val live: ULayer[AuthService] = ZLayer.succeed(new AuthService {
+            override def auth(): Unit = ()
+          })
+        }
+
+        trait Manager {
+          def doWork(request: Request): Response
+        }
+
+        object Manager {
+          val impl1: URLayer[AuthService with HttpClient, ManagerImpl1] =
+            ZLayer.fromFunction(new ManagerImpl1(_, _))
+
+          val impl2: URLayer[EmailService with HttpClient, ManagerImpl2] =
+            ZLayer.fromFunction(new ManagerImpl2(_, _))
+        }
+
+        class ManagerImpl1(authService: AuthService, httpClient: HttpClient) extends Manager {
+
+          override def doWork(request: Request): Response = {
+            authService.auth()
+
+            httpClient.doRequest(request)
+          }
+        }
+
+        class ManagerImpl2(emailService: EmailService, httpClient: HttpClient) extends Manager {
+
+          override def doWork(request: Request): Response = {
+            emailService.send()
+
+            httpClient.doRequest(request)
+          }
+        }
+
+        List(
+          test("labeled works") {
+            (for {
+              resp1 <- ZIO.serviceWith[HttpClient](_.doRequest(5))
+              resp2 <- ZIO.serviceWith[Label[HttpClient, MyLabel]](_.doRequest(5))
+              _     <- ZIO.service[EmailService]
+            } yield assertTrue(
+              resp1 == 5,
+              resp2 == 6
+            )).provide(
+              EmailService.live,
+              HttpClient.common,
+              HttpClient.withProxy.labeled[MyLabel]
+            )
+          },
+          test("requireLabeled works") {
+            (for {
+              resp1 <- ZIO.serviceWith[ManagerImpl1](_.doWork(5))
+              resp2 <- ZIO.serviceWith[ManagerImpl2](_.doWork(5))
+            } yield assertTrue(
+              resp1 == 5,
+              resp2 == 6
+            )).provide(
+              HttpClient.common,
+              HttpClient.withProxy.labeled[MyLabel],
+              AuthService.live,
+              EmailService.live,
+              Manager.impl1,
+              Manager.impl2.requireLabeled[HttpClient, MyLabel].require
+            )
+          }
+        )
+
       }
     )
 }

@@ -2526,5 +2526,16 @@ object ZLayer extends ZLayerCompanionVersionSpecific {
       trace: Trace
     ): ZLayer[RIn, E1, ROut1 with ROut2] =
       ZLayer.ZipWith[RIn, E1, ROut1, ROut2, ROut1 with ROut2](self, self >>> that, _.union[ROut2](_))
+
+    def labeled[L](implicit
+      tagged1: Tag[ROut],
+      tagged2: Tag[L],
+      trace: Trace
+    ): ZLayer[RIn, E, Label[ROut, L]] =
+      self.map(env => ZEnvironment(new Label(env.get)))
+
+    def requireLabeled[A, L](implicit trace: Trace): ZLayerLabelVersionSpecific.RequireLabeled[RIn, E, ROut, A, L] =
+      new ZLayerLabelVersionSpecific.RequireLabeled[RIn, E, ROut, A, L](self)
+
   }
 }
